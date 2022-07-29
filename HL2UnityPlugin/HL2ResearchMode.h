@@ -75,6 +75,15 @@ namespace winrt::HL2UnityPlugin::implementation
         com_array<uint8_t> GetLFCameraBuffer(int64_t& ts);
         com_array<uint8_t> GetRFCameraBuffer(int64_t& ts);
         com_array<uint8_t> GetLRFCameraBuffer(int64_t& ts_left, int64_t& ts_right);
+        
+        // Returns array of [tx, ty, tz, rx, ry, rz, rw]
+        com_array<float> GetLFCameraToWorldPose();
+        com_array<float> GetRFCameraToWorldPose();
+
+        // (u, v) is the coordinate on the image that we want to deproject, in image space.
+        // u is a value between [0, width] and v is between [0, height] 
+        com_array<float> DeprojectLFCamera(float u, float v);
+        com_array<float> DeprojectRFCamera(float u, float v);
 
         com_array<float> GetAccelSample();
         com_array<float> GetGyroSample();
@@ -171,8 +180,10 @@ namespace winrt::HL2UnityPlugin::implementation
         DirectX::XMFLOAT4X4 m_longDepthCameraPose;
         DirectX::XMMATRIX m_longDepthCameraPoseInvMatrix;
         DirectX::XMFLOAT4X4 m_LFCameraPose;
+        DirectX::XMMATRIX m_LFCameraToWorldPose;
         DirectX::XMMATRIX m_LFCameraPoseInvMatrix;
         DirectX::XMFLOAT4X4 m_RFCameraPose;
+        DirectX::XMMATRIX m_RFCameraToWorldPose;
         DirectX::XMMATRIX m_RFCameraPoseInvMatrix;
         std::thread* m_pDepthUpdateThread;
         std::thread* m_pLongDepthUpdateThread;

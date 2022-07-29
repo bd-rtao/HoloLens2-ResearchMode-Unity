@@ -644,8 +644,8 @@ namespace winrt::HL2UnityPlugin::implementation
                 auto ts_left = PerceptionTimestampHelper::FromSystemRelativeTargetTime(HundredsOfNanoseconds(checkAndConvertUnsigned(timestamp_left.HostTicks)));
                 auto ts_right = PerceptionTimestampHelper::FromSystemRelativeTargetTime(HundredsOfNanoseconds(checkAndConvertUnsigned(timestamp_right.HostTicks)));
                 
-                // uncomment the block below if their transform is needed
-                /*auto rigToWorld_l = pHL2ResearchMode->m_locator.TryLocateAtTimestamp(ts_left, pHL2ResearchMode->m_refFrame);
+                // get tracking transform
+                auto rigToWorld_l = pHL2ResearchMode->m_locator.TryLocateAtTimestamp(ts_left, pHL2ResearchMode->m_refFrame);
                 auto rigToWorld_r = rigToWorld_l;
                 if (ts_left.TargetTime() != ts_right.TargetTime()) {
                     rigToWorld_r = pHL2ResearchMode->m_locator.TryLocateAtTimestamp(ts_right, pHL2ResearchMode->m_refFrame);
@@ -656,8 +656,8 @@ namespace winrt::HL2UnityPlugin::implementation
                     continue;
                 }
                 
-                auto LfToWorld = pHL2ResearchMode->m_LFCameraPoseInvMatrix * SpatialLocationToDxMatrix(rigToWorld_l);
-				auto RfToWorld = pHL2ResearchMode->m_RFCameraPoseInvMatrix * SpatialLocationToDxMatrix(rigToWorld_r);*/
+                pHL2ResearchMode->m_LFCameraToWorldPose = pHL2ResearchMode->m_LFCameraPoseInvMatrix * SpatialLocationToDxMatrix(rigToWorld_l);
+                pHL2ResearchMode->m_RFCameraToWorldPose = pHL2ResearchMode->m_RFCameraPoseInvMatrix * SpatialLocationToDxMatrix(rigToWorld_r);
 
                 // save data
                 {
@@ -1265,6 +1265,58 @@ namespace winrt::HL2UnityPlugin::implementation
         m_LFImageUpdated = false;
         m_RFImageUpdated = false;
         return tempBuffer;
+    }
+
+    com_array<float> HL2ResearchMode::GetLFCameraToWorldPose()
+    {
+        XMVECTOR scale;
+        XMVECTOR quat;
+        XMVECTOR trans;
+        XMMatrixDecompose(&scale, &quat, &trans, m_LFCameraToWorldPose);
+        com_array<float> pose = com_array<float>(7);
+        pose[0] = XMVectorGetX(trans);
+        pose[1] = XMVectorGetY(trans);
+        pose[2] = XMVectorGetZ(trans);
+        pose[3] = XMVectorGetX(quat);
+        pose[4] = XMVectorGetY(quat);
+        pose[5] = XMVectorGetZ(quat);
+        pose[6] = XMVectorGetW(quat);
+        return pose;
+    }
+
+    com_array<float> HL2ResearchMode::GetRFCameraToWorldPose()
+    {
+        XMVECTOR scale;
+        XMVECTOR quat;
+        XMVECTOR trans;
+        XMMatrixDecompose(&scale, &quat, &trans, m_RFCameraToWorldPose);
+        com_array<float> pose = com_array<float>(7);
+        pose[0] = XMVectorGetX(trans);
+        pose[1] = XMVectorGetY(trans);
+        pose[2] = XMVectorGetZ(trans);
+        pose[3] = XMVectorGetX(quat);
+        pose[4] = XMVectorGetY(quat);
+        pose[5] = XMVectorGetZ(quat);
+        pose[6] = XMVectorGetW(quat);
+        return pose;
+    }
+
+    com_array<float> HL2ResearchMode::DeprojectLFCamera(float u, float v)
+    {
+        float uv[2] = { u, v }; // input u v in image space.
+        float xy[2] = { 0, 0 }; // output x y in camera space.
+        m_LFCameraSensor->MapImagePointToCameraUnitPlane(uv, xy);
+        com_array<float> pointOnUnitPlane = { xy[0], xy[1], 1 };
+        return pointOnUnitPlane;
+    }
+
+    com_array<float> HL2ResearchMode::DeprojectRFCamera(float u, float v)
+    {
+        float uv[2] = { u, v }; // input u v in image space.
+        float xy[2] = { 0, 0 }; // output x y in camera space.
+        m_RFCameraSensor->MapImagePointToCameraUnitPlane(uv, xy);
+        com_array<float> pointOnUnitPlane = { xy[0], xy[1], 1 };
+        return pointOnUnitPlane;
     }
 
     com_array<float> HL2ResearchMode::GetAccelSample()

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using UnityEngine;
 using System;
 using System.Runtime.InteropServices;
+using Microsoft.MixedReality.OpenXR;
+
 
 #if ENABLE_WINMD_SUPPORT
 using HL2UnityPlugin;
@@ -67,7 +69,9 @@ public class ResearchModeVideoStream : MonoBehaviour
     private void Awake()
     {
 #if ENABLE_WINMD_SUPPORT
-#if UNITY_2020_1_OR_NEWER // note: Unity 2021.2 and later not supported
+#if UNITY_2021_2_OR_NEWER
+        unityWorldOrigin = PerceptionInterop.GetSceneCoordinateSystem(UnityEngine.Pose.identity) as Windows.Perception.Spatial.SpatialCoordinateSystem;
+#elif UNITY_2020_1_OR_NEWER // note: Unity 2021.2 and later not supported
         IntPtr WorldOriginPtr = UnityEngine.XR.WindowsMR.WindowsMREnvironment.OriginSpatialCoordinateSystem;
         unityWorldOrigin = Marshal.GetObjectForIUnknown(WorldOriginPtr) as Windows.Perception.Spatial.SpatialCoordinateSystem;
         //unityWorldOrigin = Windows.Perception.Spatial.SpatialLocator.GetDefault().CreateStationaryFrameOfReferenceAtCurrentLocation().CoordinateSystem;
@@ -320,7 +324,7 @@ public class ResearchModeVideoStream : MonoBehaviour
 #endif
 
 
-    #region Button Event Functions
+#region Button Event Functions
     public void TogglePreviewEvent()
     {
         startRealtimePreview = !startRealtimePreview;
@@ -387,7 +391,7 @@ public class ResearchModeVideoStream : MonoBehaviour
 #endif
     }
 
-    #endregion
+#endregion
     private void OnApplicationFocus(bool focus)
     {
         if (!focus) StopSensorsEvent();

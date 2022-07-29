@@ -8,4 +8,8 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/PointCloudSample.unity
     guid: b2ea44247999fe846983588a46fa8ad7
-  m_configObjects: {}
+  m_configObjects:
+    com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 9fc0f75d440e2f643bb98530db9bc358,
+      type: 2}
+    com.unity.xr.openxr.settings4: {fileID: 11400000, guid: bdef06b696f8eea4cb865997d0cb9e9c,
+      type: 2}

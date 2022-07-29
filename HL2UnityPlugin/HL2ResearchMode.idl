@@ -20,6 +20,10 @@ namespace HL2UnityPlugin
         UInt8[] GetLFCameraBuffer(out Int64 ts);
         UInt8[] GetRFCameraBuffer(out Int64 ts);
         UInt8[] GetLRFCameraBuffer(out Int64 ts_left, out Int64 ts_right);
+        Single[] GetLFCameraToWorldPose();
+        Single[] GetRFCameraToWorldPose();
+        Single[] DeprojectLFCamera(Single u, Single v);
+        Single[] DeprojectRFCamera(Single u, Single v);
         
         Single[] GetAccelSample();
         Single[] GetGyroSample();
