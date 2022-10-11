@@ -194,10 +194,10 @@ namespace winrt::HL2UnityPlugin::implementation
         static long long checkAndConvertUnsigned(UINT64 val);
         static DirectX::XMMATRIX HL2ResearchMode::SpatialLocationToDxMatrix(Windows::Perception::Spatial::SpatialLocation location);
         struct DepthCamRoi {
-            float kRowLower = 0.2;
-            float kRowUpper = 0.55;
-            float kColLower = 0.3;
-            float kColUpper = 0.7;
+            float kRowLower = 0.0;
+            float kRowUpper = 1.0;
+            float kColLower = 0.0;
+            float kColUpper = 1.0;
             UINT16 depthNearClip = 200; // Unit: mm
             UINT16 depthFarClip = 800;
         } depthCamRoi;
