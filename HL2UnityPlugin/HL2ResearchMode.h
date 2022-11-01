@@ -39,13 +39,14 @@ namespace winrt::HL2UnityPlugin::implementation
         void InitializeGyroSensor();
         void InitializeMagSensor();
 
-        void StartDepthSensorLoop(bool reconstructPointCloud = true);
+        void StartDepthSensorLoop(bool reconstructPointCloud = true, bool reproectOntoLFImage = false);
         void StartLongDepthSensorLoop(bool reconstructPointCloud = true);
         void StartSpatialCamerasFrontLoop();
         void StartAccelSensorLoop();
         void StartGyroSensorLoop();
         void StartMagSensorLoop();
 
+        void StopDepthSensorLoop();
         void StopAllSensorDevice();
 
         bool DepthMapTextureUpdated();
@@ -56,6 +57,7 @@ namespace winrt::HL2UnityPlugin::implementation
         bool LongDepthMapTextureUpdated();
 		bool LFImageUpdated();
 		bool RFImageUpdated();
+        bool LFDepthImageUpdated();
         bool AccelSampleUpdated();
         bool GyroSampleUpdated();
         bool MagSampleUpdated();
@@ -75,7 +77,8 @@ namespace winrt::HL2UnityPlugin::implementation
         com_array<uint8_t> GetLFCameraBuffer(int64_t& ts);
         com_array<uint8_t> GetRFCameraBuffer(int64_t& ts);
         com_array<uint8_t> GetLRFCameraBuffer(int64_t& ts_left, int64_t& ts_right);
-        
+        com_array<uint8_t> GetLFDepthCameraBuffer();
+
         // Returns array of [tx, ty, tz, rx, ry, rz, rw]
         com_array<float> GetLFCameraToWorldPose();
         com_array<float> GetRFCameraToWorldPose();
@@ -84,6 +87,18 @@ namespace winrt::HL2UnityPlugin::implementation
         // u is a value between [0, width] and v is between [0, height] 
         com_array<float> DeprojectLFCamera(float u, float v);
         com_array<float> DeprojectRFCamera(float u, float v);
+
+        // Recalculate the world point's depth relative to the LF Camera using the depth image reprojected onto the LF camera.
+        com_array<float> RefinePointUsingLFDepth(float xWorld, float yWorld, float zWorld);
+        com_array<float> RefinePointUsingLFDepthOld(float xWorld, float yWorld, float zWorld);
+
+        // Returns a {u, v} coordinate on the LF depth image, given a point in the world frame
+        com_array<float> ProjectLFDepthCamera(float xWorld, float yWorld, float zWorld);
+            // Returns a {u, v} coordinate on the depth image, given a point in the world frame
+        com_array<float> ProjectDepthCamera(float xWorld, float yWorld, float zWorld);
+        
+        // Returns empty array if no valid depth point was found.
+        com_array<float> GetDepthPoint(float u, float v);
 
         com_array<float> GetAccelSample();
         com_array<float> GetGyroSample();
@@ -157,12 +172,15 @@ namespace winrt::HL2UnityPlugin::implementation
         std::atomic_bool m_useRoiFilter = false;
 		std::atomic_bool m_LFImageUpdated = false;
 		std::atomic_bool m_RFImageUpdated = false;
+        std::atomic_bool m_LFDepthImageUpdated = false;
         std::atomic_bool m_accelSampleUpdated = false;
         std::atomic_bool m_gyroSampleUpdated = false;
         std::atomic_bool m_magSampleUpdated = false;
 
         std::atomic_bool m_reconstructShortThrowPointCloud = false;
         std::atomic_bool m_reconstructLongThrowPointCloud = false;
+        std::atomic_bool m_reprojectOntoLFImage = false;
+
 
         float m_roiBound[3]{ 0,0,0 };
         float m_roiCenter[3]{ 0,0,0 };
@@ -176,21 +194,24 @@ namespace winrt::HL2UnityPlugin::implementation
         static void ImuAccessOnComplete(ResearchModeSensorConsent consent);
         std::string MatrixToString(DirectX::XMFLOAT4X4 mat);
         DirectX::XMFLOAT4X4 m_depthCameraPose;
+        DirectX::XMMATRIX m_depthToWorldPose;
+        DirectX::XMMATRIX m_worldToDepthPose;
         DirectX::XMMATRIX m_depthCameraPoseInvMatrix;
         DirectX::XMFLOAT4X4 m_longDepthCameraPose;
         DirectX::XMMATRIX m_longDepthCameraPoseInvMatrix;
         DirectX::XMFLOAT4X4 m_LFCameraPose;
-        DirectX::XMMATRIX m_LFCameraToWorldPose;
         DirectX::XMMATRIX m_LFCameraPoseInvMatrix;
+        DirectX::XMMATRIX m_LFCameraToWorldPose;
+        DirectX::XMMATRIX m_worldToLFCameraPose;
         DirectX::XMFLOAT4X4 m_RFCameraPose;
         DirectX::XMMATRIX m_RFCameraToWorldPose;
         DirectX::XMMATRIX m_RFCameraPoseInvMatrix;
-        std::thread* m_pDepthUpdateThread;
-        std::thread* m_pLongDepthUpdateThread;
-        std::thread* m_pSpatialCamerasFrontUpdateThread;
-        std::thread* m_pAccelUpdateThread;
-        std::thread* m_pGyroUpdateThread;
-        std::thread* m_pMagUpdateThread;
+        std::thread* m_pDepthUpdateThread = nullptr;
+        std::thread* m_pLongDepthUpdateThread = nullptr;
+        std::thread* m_pSpatialCamerasFrontUpdateThread = nullptr;
+        std::thread* m_pAccelUpdateThread = nullptr;
+        std::thread* m_pGyroUpdateThread = nullptr;
+        std::thread* m_pMagUpdateThread = nullptr;
         static long long checkAndConvertUnsigned(UINT64 val);
         static DirectX::XMMATRIX HL2ResearchMode::SpatialLocationToDxMatrix(Windows::Perception::Spatial::SpatialLocation location);
         struct DepthCamRoi {
@@ -215,6 +236,11 @@ namespace winrt::HL2UnityPlugin::implementation
             Frame LFFrame;
             Frame RFFrame;
         } m_lastSpatialFrame;
+
+        uint8_t* m_lastLFDepthImage = nullptr;
+        
+        using ImageCoord = std::tuple<int, int>;
+        std::map<ImageCoord, std::vector<float>> m_lfdepthMap;
     };
 }
 namespace winrt::HL2UnityPlugin::factory_implementation

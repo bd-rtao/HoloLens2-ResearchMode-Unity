@@ -21,7 +21,7 @@ using namespace winrt::Windows::Perception::Spatial::Preview;
 
 namespace winrt::HL2UnityPlugin::implementation
 {
-    HL2ResearchMode::HL2ResearchMode() 
+    HL2ResearchMode::HL2ResearchMode() : m_lfdepthMap()
     {
         // Load Research Mode library
         camConsentGiven = CreateEvent(nullptr, true, false, nullptr);
@@ -148,17 +148,17 @@ namespace winrt::HL2UnityPlugin::implementation
         }
     }
 
-    void HL2ResearchMode::StartDepthSensorLoop(bool reconstructPointCloud)
+    void HL2ResearchMode::StartDepthSensorLoop(bool reconstructPointCloud, bool reprojectOntoLFImage)
     {
         //std::thread th1([this] {this->DepthSensorLoopTest(); });
-        if (reconstructPointCloud && m_refFrame == nullptr)
+        if ((reconstructPointCloud || reprojectOntoLFImage) && m_refFrame == nullptr)
         {
             m_refFrame = m_locator.GetDefault().CreateStationaryFrameOfReferenceAtCurrentLocation().CoordinateSystem();
         }
         m_reconstructShortThrowPointCloud = reconstructPointCloud;
-
+        m_reprojectOntoLFImage = reprojectOntoLFImage;
         m_pDepthUpdateThread = new std::thread(HL2ResearchMode::DepthSensorLoop, this);
-    }
+    } 
 
     void HL2ResearchMode::DepthSensorLoop(HL2ResearchMode* pHL2ResearchMode)
     {
@@ -207,7 +207,7 @@ namespace winrt::HL2UnityPlugin::implementation
 
                 // get tracking transform
                 Windows::Perception::Spatial::SpatialLocation transToWorld = nullptr;
-                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud) 
+                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud || pHL2ResearchMode->m_reprojectOntoLFImage)
                 {
                     auto ts = PerceptionTimestampHelper::FromSystemRelativeTargetTime(HundredsOfNanoseconds(checkAndConvertUnsigned(timestamp.HostTicks)));
                     transToWorld = pHL2ResearchMode->m_locator.TryLocateAtTimestamp(ts, pHL2ResearchMode->m_refFrame);
@@ -215,16 +215,94 @@ namespace winrt::HL2UnityPlugin::implementation
                 }
 
                 XMMATRIX depthToWorld = XMMatrixIdentity();
-                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud)
+                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud || pHL2ResearchMode->m_reprojectOntoLFImage)
                     depthToWorld = pHL2ResearchMode->m_depthCameraPoseInvMatrix * SpatialLocationToDxMatrix(transToWorld);
-
+                
                 pHL2ResearchMode->mu.lock();
+                pHL2ResearchMode->m_depthToWorldPose = depthToWorld;
+                pHL2ResearchMode->m_worldToDepthPose = XMMatrixInverse(nullptr, depthToWorld);
+                
                 auto roiCenterFloat = XMFLOAT3(pHL2ResearchMode->m_roiCenter[0], pHL2ResearchMode->m_roiCenter[1], pHL2ResearchMode->m_roiCenter[2]);
                 auto roiBoundFloat = XMFLOAT3(pHL2ResearchMode->m_roiBound[0], pHL2ResearchMode->m_roiBound[1], pHL2ResearchMode->m_roiBound[2]);
                 pHL2ResearchMode->mu.unlock();
 
                 XMVECTOR roiCenter = XMLoadFloat3(&roiCenterFloat);
                 XMVECTOR roiBound = XMLoadFloat3(&roiBoundFloat);
+                
+                // Initialize depth map in the LF camera frame
+                std::unique_ptr<uint8_t> lfdepthImage;
+                std::map<ImageCoord, std::vector<float>> lfdepthMap;
+                if (pHL2ResearchMode->m_reprojectOntoLFImage && pHL2ResearchMode->m_LFbufferSize > 0) {
+                    //lfdepthImage.reset(new uint8_t[pHL2ResearchMode->m_LFbufferSize]);
+                    //memset(lfdepthImage.get(), 0, pHL2ResearchMode->m_LFbufferSize);
+                    pHL2ResearchMode->mu.lock();
+                    int LFCameraWidth = pHL2ResearchMode->m_LFResolution.Width;
+                    int LFCameraHeight = pHL2ResearchMode->m_LFResolution.Height;
+                    XMMATRIX lfcameraToWorld = pHL2ResearchMode->m_LFCameraToWorldPose;  // Match the timestamp to the latest LF camera pose, not the depth camera.
+                    XMMATRIX lfcameraToWorldInv = pHL2ResearchMode->m_worldToLFCameraPose;
+                    pHL2ResearchMode->mu.unlock();
+                    for (UINT i = 0; i < resolution.Height; i++)
+                    {
+                        for (UINT j = 0; j < resolution.Width; j++)
+                        {
+                            auto idx = resolution.Width * i + j;
+                            UINT16 depth = pDepth[idx];
+                            if (depth > 4090) {
+                                continue;
+                            }
+                            // Save depth map in the LF camera image frame
+                            float uv_depth[2] = { j, i };   // Input depth image uv
+                            float xy_depth[2] = { 0, 0 };   // Output depth camera space xy
+                            pHL2ResearchMode->m_pDepthCameraSensor->MapImagePointToCameraUnitPlane(uv_depth, xy_depth);
+                            auto pointOnUnitPlane = XMFLOAT3(xy_depth[0], xy_depth[1], 1);
+                            auto pointInDepthCamera = (float)depth / 1000 * XMVector3Normalize(XMLoadFloat3(&pointOnUnitPlane));
+                            // apply transformation
+                            auto pointInWorld = XMVector3Transform(pointInDepthCamera, depthToWorld);
+
+                            // Calculate the pixel in the LF camera image that this depth point maps to
+                            auto pointInLFCamera = XMVector3Transform(pointInWorld, lfcameraToWorldInv);
+                            float x = XMVectorGetX(pointInLFCamera);
+                            float y = XMVectorGetY(pointInLFCamera);
+                            float z = XMVectorGetZ(pointInLFCamera);
+                            float lfdepth = XMVectorGetX(XMVector3Length(pointInLFCamera));
+                            float xy[2] = { x / z, y / z }; // input x y in camera space, normalized.
+                            float uv[2] = { 0, 0 }; // output u v in image space.
+                            pHL2ResearchMode->m_LFCameraSensor->MapCameraSpaceToImagePoint(xy, uv);
+                            // Update the depth map
+                            int u = std::floor(uv[0]);
+                            int v = std::floor(uv[1]);
+                            if (0 <= u && u < LFCameraWidth && 0 <= v && v < LFCameraHeight) {
+                                // Try to insert a new list at the key. If a list exists, emplace will return the existing one.
+                                auto map_result = lfdepthMap.emplace(ImageCoord(u, v), std::vector<float>()).first;
+                                // `result` is an iterator of a pair, where first is the key and second is the value.
+                                map_result->second.push_back(lfdepth);
+                            }
+                            //int idx = LFCameraWidth * v + u;
+                            //if (0 <= u && u < LFCameraWidth && 0 <= v && v < LFCameraHeight) {
+                            //    uint8_t depth_pixel = (uint8_t)(lfdepth * 255);
+                            //    bool isCloserToCamera = (lfdepthImage.get()[idx] == 0) || (depth_pixel < lfdepthImage.get()[idx]);
+                            //    if (0 < depth_pixel && depth_pixel < 256 && isCloserToCamera)
+                            //        lfdepthImage.get()[idx] = depth_pixel;
+                            //}
+
+                            // Niavely dialate the point in image space so it takes up 3x3  pixels.
+                           /* for (int du = -1; du <= 1; du++) {
+                                for (int dv = -1; dv <= 1; dv++) {
+                                    int u = std::floor(uv[0] + du);
+                                    int v = std::floor(uv[1] + dv);
+                                    int idx = LFCameraWidth * v + u;
+                                    if (0 <= u && u < LFCameraWidth && 0 <= v && v < LFCameraHeight) {
+                                        uint8_t depth_pixel = (uint8_t)(lfdepth * 255);
+                                        bool isCloserToCamera = (lfdepthImage.get()[idx] == 0) || (depth_pixel < lfdepthImage.get()[idx]);
+                                        if (0 < depth_pixel && depth_pixel < 256 && isCloserToCamera)
+                                        lfdepthImage.get()[idx] = depth_pixel;
+                                    }
+                                }
+                            }*/
+
+                        }
+                    }
+                }
                 
                 for (UINT i = 0; i < resolution.Height; i++)
                 {
@@ -257,8 +335,9 @@ namespace winrt::HL2UnityPlugin::implementation
                                     pointCloud.push_back(XMVectorGetY(pointInWorld));
                                     pointCloud.push_back(-XMVectorGetZ(pointInWorld));
                                 }
+                                
                             }
-                        }
+                        } //  if (pHL2ResearchMode->m_reconstructShortThrowPointCloud) 
 
                         // save depth map as grayscale texture pixel into temp buffer
                         if (depth == 0) { pDepthTexture.get()[idx] = 0; }
@@ -271,7 +350,6 @@ namespace winrt::HL2UnityPlugin::implementation
                         else { processedAbValue = (uint8_t)((float)abValue / 1000 * 255); }
 
                         pAbTexture.get()[idx] = processedAbValue;
-
                         // save the depth of center pixel
                         if (pHL2ResearchMode->m_reconstructShortThrowPointCloud && 
                             i == (UINT)(0.35 * resolution.Height) && j == (UINT)(0.5 * resolution.Width)
@@ -305,7 +383,22 @@ namespace winrt::HL2UnityPlugin::implementation
                         memcpy(pHL2ResearchMode->m_pointCloud, pointCloud.data(), pointCloud.size() * sizeof(float));
                         pHL2ResearchMode->m_pointcloudLength = pointCloud.size();
                     }
+
+                    // Save the depth map reprojected onto the LF image
+                    if (lfdepthImage != nullptr) {
+                        if (!pHL2ResearchMode->m_lastLFDepthImage)
+                        {
+                            OutputDebugString(L"Create Space for lf depth image...\n");
+                            pHL2ResearchMode->m_lastLFDepthImage = new UINT8[pHL2ResearchMode->m_LFbufferSize];
+                        }
+                        memcpy(pHL2ResearchMode->m_lastLFDepthImage, lfdepthImage.get(), pHL2ResearchMode->m_LFbufferSize);
+                        pHL2ResearchMode->m_LFDepthImageUpdated = true;
+                    }
                     
+                    if (lfdepthMap.size() > 0) {
+                        pHL2ResearchMode->m_lfdepthMap = std::move(lfdepthMap);
+                        pHL2ResearchMode->m_LFDepthImageUpdated = true;
+                    }
 
                     // save raw depth map
                     if (!pHL2ResearchMode->m_depthMap)
@@ -657,6 +750,7 @@ namespace winrt::HL2UnityPlugin::implementation
                 }
                 
                 pHL2ResearchMode->m_LFCameraToWorldPose = pHL2ResearchMode->m_LFCameraPoseInvMatrix * SpatialLocationToDxMatrix(rigToWorld_l);
+                pHL2ResearchMode->m_worldToLFCameraPose = XMMatrixInverse(nullptr, pHL2ResearchMode->m_LFCameraToWorldPose);
                 pHL2ResearchMode->m_RFCameraToWorldPose = pHL2ResearchMode->m_RFCameraPoseInvMatrix * SpatialLocationToDxMatrix(rigToWorld_r);
 
                 // save data
@@ -675,7 +769,7 @@ namespace winrt::HL2UnityPlugin::implementation
 					{
 						OutputDebugString(L"Create Space for Left Front Image...\n");
 						pHL2ResearchMode->m_lastSpatialFrame.LFFrame.image = new UINT8[LFOutBufferCount];
-					}
+					}                                          
 					memcpy(pHL2ResearchMode->m_lastSpatialFrame.LFFrame.image, pLFImage, LFOutBufferCount * sizeof(UINT8));
 
 					if (!pHL2ResearchMode->m_lastSpatialFrame.RFFrame.image)
@@ -947,6 +1041,8 @@ namespace winrt::HL2UnityPlugin::implementation
 	inline bool HL2ResearchMode::LFImageUpdated() { return m_LFImageUpdated; }
 
 	inline bool HL2ResearchMode::RFImageUpdated() { return m_RFImageUpdated; }
+    
+    inline bool HL2ResearchMode::LFDepthImageUpdated() { return m_LFDepthImageUpdated; }
 
     inline bool HL2ResearchMode::AccelSampleUpdated() { return m_accelSampleUpdated; }
 
@@ -1016,12 +1112,69 @@ namespace winrt::HL2UnityPlugin::implementation
         return ss.str();
     }
     
+    void HL2ResearchMode::StopDepthSensorLoop()
+    {
+        if (!m_depthSensorLoopStarted) {
+            std::cout << "Did not need to stop depth, it was not started" << std::endl;
+            return;
+        }
+        std::cout << "Stoping depth sensor" << std::endl;
+        m_depthSensorLoopStarted = false;
+        std::cout << "debug0" << std::endl;
+        m_pDepthUpdateThread->join();
+        std::cout << "debug1" << std::endl;
+        m_pDepthUpdateThread = nullptr;
+        std::cout << "debug2" << std::endl;
+        std::lock_guard<std::mutex> l(mu);
+        std::cout << "debug3" << std::endl;
+        if (m_depthMap)
+        {
+            delete[] m_depthMap;
+            m_depthMap = nullptr;
+        }
+        std::cout << "debug4" << std::endl;
+        if (m_depthMapTexture)
+        {
+            delete[] m_depthMapTexture;
+            m_depthMapTexture = nullptr;
+        }
+        std::cout << "debug5" << std::endl;
+        if (m_pointCloud)
+        {
+            m_pointcloudLength = 0;
+            delete[] m_pointCloud;
+            m_pointCloud = nullptr;
+        }
+        std::cout << "debug6" << std::endl;
+        if (m_shortAbImage)
+        {
+            delete[] m_shortAbImage;
+            m_shortAbImage = nullptr;
+        }
+        std::cout << "debug7" << std::endl;
+        if (m_shortAbImageTexture)
+        {
+            delete[] m_shortAbImageTexture;
+            m_shortAbImageTexture = nullptr;
+        }
+        std::cout << "debug8" << std::endl;
+        if (m_lastLFDepthImage)
+        {
+            delete[] m_lastLFDepthImage;
+            m_lastLFDepthImage = nullptr;
+        }
+
+    }
+
+    
     // Stop the sensor loop and release buffer space.
     // Sensor object should be released at the end of the loop function
     void HL2ResearchMode::StopAllSensorDevice()
     {
+        std::lock_guard<std::mutex> l(mu);
+
         m_depthSensorLoopStarted = false;
-        //m_pDepthUpdateThread->join();
+        m_pDepthUpdateThread->join();
         if (m_depthMap) 
         {
             delete[] m_depthMap;
@@ -1047,6 +1200,11 @@ namespace winrt::HL2UnityPlugin::implementation
         {
             delete[] m_shortAbImageTexture;
             m_shortAbImageTexture = nullptr;
+        }
+        if (m_lastLFDepthImage) 
+        {
+            delete[] m_lastLFDepthImage;
+            m_lastLFDepthImage = nullptr;
         }
         if (m_longAbImage)
         {
@@ -1267,6 +1425,16 @@ namespace winrt::HL2UnityPlugin::implementation
         return tempBuffer;
     }
 
+    com_array<uint8_t> HL2ResearchMode::GetLFDepthCameraBuffer() {
+        if (!m_lastLFDepthImage)
+        {
+            return com_array<UINT8>();
+        }
+        com_array<UINT8> tempBuffer = com_array<UINT8>(std::move_iterator(m_lastLFDepthImage), std::move_iterator(m_lastLFDepthImage + m_LFbufferSize));
+        m_LFDepthImageUpdated = false;
+        return tempBuffer;
+    }
+
     com_array<float> HL2ResearchMode::GetLFCameraToWorldPose()
     {
         XMVECTOR scale;
@@ -1317,6 +1485,183 @@ namespace winrt::HL2UnityPlugin::implementation
         m_RFCameraSensor->MapImagePointToCameraUnitPlane(uv, xy);
         com_array<float> pointOnUnitPlane = { xy[0], xy[1], 1 };
         return pointOnUnitPlane;
+    }
+
+    com_array<float> HL2ResearchMode::ProjectLFDepthCamera(float xWorld, float yWorld, float zWorld)
+    {
+        std::lock_guard<std::mutex> l(mu);
+        // Get the point in the LF Camera Frame
+        auto pointInWorld = XMFLOAT3(xWorld, yWorld, -zWorld);
+        auto pointInLFCamera = XMVector3Transform(XMLoadFloat3(&pointInWorld), m_worldToLFCameraPose);
+        float x = XMVectorGetX(pointInLFCamera);
+        float y = XMVectorGetY(pointInLFCamera);
+        float z = XMVectorGetZ(pointInLFCamera);
+
+        // Find the pixel in the depth image
+        float xy[2] = { x / z, y / z }; // input x y in camera space, normalized.
+        float uv[2] = { 0, 0 }; // output u v in image space.
+        m_LFCameraSensor->MapCameraSpaceToImagePoint(xy, uv);
+        com_array<float> pointOnImage = { uv[0], uv[1] };
+        return pointOnImage;
+    }
+
+    com_array<float> HL2ResearchMode::RefinePointUsingLFDepth(float xWorld, float yWorld, float zWorld)
+    {
+        if (m_lfdepthMap.size() == 0)
+        {
+            return com_array<float>();
+        }
+
+        std::lock_guard<std::mutex> l(mu);
+        // Get the point in the LF Camera Frame
+        auto pointInWorld = XMFLOAT3(xWorld, yWorld, -zWorld);
+        auto pointInLFCamera = XMVector3Transform(XMLoadFloat3(&pointInWorld), m_worldToLFCameraPose);
+        float x = XMVectorGetX(pointInLFCamera);
+        float y = XMVectorGetY(pointInLFCamera);
+        float z = XMVectorGetZ(pointInLFCamera);
+
+        // Find the pixel in the depth image
+        float xy[2] = { x / z, y / z }; // input x y in camera space, normalized.
+        float uv[2] = { 0, 0 }; // output u v in image space.
+        m_LFCameraSensor->MapCameraSpaceToImagePoint(xy, uv);
+        
+        std::vector<float> depths;
+        // Find depths in a 5x5 pixel region around the target uv.
+        for (int du = -2; du <= 2; du++) {
+            for (int dv = -2; dv <= 2; dv++) {
+                int u = std::floor(uv[0] + du);
+                int v = std::floor(uv[1] + dv);
+                if (0 <= u && u < m_LFResolution.Width && 0 <= v && v < m_LFResolution.Height) {
+                    ImageCoord coord(u, v);
+                    auto map_result = m_lfdepthMap.find(coord);
+                    if (map_result != m_lfdepthMap.end()) {
+                        // Add to depths vector
+                        depths.insert(depths.end(), map_result->second.begin(), map_result->second.end());
+                    }
+                }
+            }
+        }
+        if (depths.size() == 0) {
+            return com_array<float>();
+        }
+        std::cout << "Found depths.size() " << depths.size() << std::endl;
+
+        // Find the depth nearest to the target depth (based on the given point in the function args).
+        float bestDepth = depths[0];
+        float targetDepth = XMVectorGetX(XMVector3Length(pointInLFCamera));
+        std::cout << "Found depths: ";
+        for (int i = 1; i < depths.size(); i++) {
+            std::cout << depths[i];
+            if (std::abs(targetDepth - depths[i]) < std::abs(targetDepth - bestDepth)) {
+                bestDepth = depths[i];
+            }
+        }
+        std::cout << std::endl;
+
+        // Filter outliers
+        const float OUTLIER_THRESHOLD = 0.1;
+        std::vector<float> filteredDepths;
+        std::cout << "Filtered depths: " << std::endl;
+        for (float d : depths) {
+            if (std::abs(bestDepth - d) < OUTLIER_THRESHOLD) {
+                filteredDepths.push_back(d);
+                std::cout << d;
+            }
+        }
+        std::cout << std::endl;
+
+        // Find the median element. 
+        std::sort(filteredDepths.begin(), filteredDepths.end());
+        // When there's an even number of elements, we don't calculate the midpoint for simplicity.
+        float medianDepth = filteredDepths[filteredDepths.size() / 2];
+        std::cout << "Found median depth " << medianDepth << std::endl;
+
+
+        // Use the best depth to find the refined point.
+        auto refinedPointInLFCamera = medianDepth * XMVector3Normalize(pointInLFCamera);
+        auto refinedPointInWorld = XMVector3Transform(refinedPointInLFCamera, m_LFCameraToWorldPose);
+        com_array<float> refinedPointInUnityWorld = {
+            XMVectorGetX(refinedPointInWorld),
+            XMVectorGetY(refinedPointInWorld),
+            -XMVectorGetZ(refinedPointInWorld)
+        };
+        return refinedPointInUnityWorld;
+    }
+    
+    com_array<float> HL2ResearchMode::RefinePointUsingLFDepthOld(float xWorld, float yWorld, float zWorld)
+    {
+        // This function has problems when the reprojected depth image has phase wrapping data farther away.
+        // The phase-wrapped data will appear closer to the LF camera than the real depth, which will
+        // give a bad depth result. Please use the other RefinePointUsingLFDepth function
+        if (!m_lastLFDepthImage)
+        {
+            return com_array<float>();
+        }
+        std::lock_guard<std::mutex> l(mu);
+        // Get the point in the LF Camera Frame
+        auto pointInWorld = XMFLOAT3(xWorld, yWorld, -zWorld);
+        auto pointInLFCamera = XMVector3Transform(XMLoadFloat3(&pointInWorld), m_worldToLFCameraPose);
+        float x = XMVectorGetX(pointInLFCamera);
+        float y = XMVectorGetY(pointInLFCamera);
+        float z = XMVectorGetZ(pointInLFCamera);
+        
+        // Find the pixel in the depth image
+        float xy[2] = { x / z, y / z }; // input x y in camera space, normalized.
+        float uv[2] = { 0, 0 }; // output u v in image space.
+        m_LFCameraSensor->MapCameraSpaceToImagePoint(xy, uv);
+        int idx = std::floor(uv[1]) * m_LFResolution.Width + std::floor(uv[0]);
+        uint8_t depth_pixel = m_lastLFDepthImage[idx];
+        float depth = (float)depth_pixel / 256;
+        
+        // Use the depth to update the point.
+        auto refinedPointInLFCamera = depth * XMVector3Normalize(pointInLFCamera);
+        auto refinedPointInWorld = XMVector3Transform(refinedPointInLFCamera, m_LFCameraToWorldPose);
+        com_array<float> refinedPointInUnityWorld = {
+            XMVectorGetX(refinedPointInWorld),
+            XMVectorGetY(refinedPointInWorld),
+            -XMVectorGetZ(refinedPointInWorld)
+        };
+        return refinedPointInUnityWorld;
+    }
+
+    com_array<float> HL2ResearchMode::ProjectDepthCamera(float xWorld, float yWorld, float zWorld)
+    {
+        std::lock_guard<std::mutex> l(mu);
+        auto pointInWorld = XMFLOAT3(xWorld, yWorld, -zWorld);
+        auto pointInDepthCamera = XMVector3Transform(XMLoadFloat3(&pointInWorld) , m_worldToDepthPose);
+        float x = XMVectorGetX(pointInDepthCamera);
+        float y = XMVectorGetY(pointInDepthCamera);
+        float z = XMVectorGetZ(pointInDepthCamera);
+        float xy[2] = { x / z, y / z }; // input x y in camera space, normalized.
+        float uv[2] = { 0, 0 }; // output u v in image space.
+        m_pDepthCameraSensor->MapCameraSpaceToImagePoint(xy, uv);
+        com_array<float> pointOnImage = { uv[0], uv[1] };
+        return pointOnImage;
+    }
+
+    com_array<float> HL2ResearchMode::GetDepthPoint(float u, float v)
+    {
+        std::lock_guard<std::mutex> l(mu);
+        bool in_range = (0 <= u && u < m_depthResolution.Width && 0 <= v && v < m_depthResolution.Height);
+        if (!m_depthMap || !in_range)
+        {
+            return com_array<float>();
+        }
+        int idx = std::floor(v) * m_depthResolution.Width + std::floor(u);
+        UINT16 depth = m_depthMap[idx];
+        if (depth > 4090) {
+            return com_array<float>();
+        }
+
+        float uv[2] = { u, v };
+        float xy[2] = { 0, 0 };
+        m_pDepthCameraSensor->MapImagePointToCameraUnitPlane(uv, xy);
+        auto pointOnUnitPlane = XMFLOAT3(xy[0], xy[1], 1);
+        auto tempPoint = (float)depth / 1000 * XMVector3Normalize(XMLoadFloat3(&pointOnUnitPlane));
+        // apply transformation
+        auto pointInWorld = XMVector3Transform(tempPoint, m_depthToWorldPose);
+        com_array<float> pointInUnityWorld = { XMVectorGetX(pointInWorld), XMVectorGetY(pointInWorld), -XMVectorGetZ(pointInWorld) };
+        return pointInUnityWorld;
     }
 
     com_array<float> HL2ResearchMode::GetAccelSample()

@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <wrl.h>
 
+static constexpr UINT64 kMaxLongLong = LLONG_MAX;
+
 typedef std::chrono::duration<int64_t, std::ratio<1, 10'000'000>> HundredsOfNanoseconds;
 
 HundredsOfNanoseconds UniversalToUnixTime(const FILETIME fileTime);

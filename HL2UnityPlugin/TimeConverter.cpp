@@ -9,9 +9,10 @@
 //
 //*********************************************************
 #define NOMINMAX
+#include "pch.h"
 #include "TimeConverter.h"
 
-static constexpr UINT64 kMaxLongLong = static_cast<UINT64>(std::numeric_limits<long long>::max());
+//static constexpr UINT64 kMaxLongLong = static_cast<UINT64>(std::numeric_limits<long long>::max());
 
 long long checkAndConvertUnsigned(UINT64 val)
 {

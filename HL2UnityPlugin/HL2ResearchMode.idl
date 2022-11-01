@@ -20,11 +20,16 @@ namespace HL2UnityPlugin
         UInt8[] GetLFCameraBuffer(out Int64 ts);
         UInt8[] GetRFCameraBuffer(out Int64 ts);
         UInt8[] GetLRFCameraBuffer(out Int64 ts_left, out Int64 ts_right);
+        UInt8[] GetLFDepthCameraBuffer();
         Single[] GetLFCameraToWorldPose();
         Single[] GetRFCameraToWorldPose();
         Single[] DeprojectLFCamera(Single u, Single v);
         Single[] DeprojectRFCamera(Single u, Single v);
-        
+        Single[] RefinePointUsingLFDepth(Single xWorld, Single yWorld, Single zWorld);
+        Single[] ProjectLFDepthCamera(Single xWorld, Single yWorld, Single zWorld);
+        Single[] ProjectDepthCamera(Single xWorld, Single yWorld, Single zWorld);
+        Single[] GetDepthPoint(Single u, Single v);
+
         Single[] GetAccelSample();
         Single[] GetGyroSample();
         Single[] GetMagSample();
@@ -48,6 +53,7 @@ namespace HL2UnityPlugin
 
 		Boolean LFImageUpdated();
 		Boolean RFImageUpdated();
+        Boolean LFDepthImageUpdated();
         Boolean AccelSampleUpdated();
         Boolean GyroSampleUpdated();
         Boolean MagSampleUpdated();
@@ -61,7 +67,7 @@ namespace HL2UnityPlugin
         void InitializeMagSensor();
 
         void StartDepthSensorLoop();
-        void StartDepthSensorLoop(Boolean reconstructPointCloud);
+        void StartDepthSensorLoop(Boolean reconstructPointCloud, Boolean reprojectOntoLFImage);
         void StartLongDepthSensorLoop();
         void StartLongDepthSensorLoop(Boolean reconstructPointCloud);
 		void StartSpatialCamerasFrontLoop();
@@ -69,6 +75,7 @@ namespace HL2UnityPlugin
         void StartGyroSensorLoop();
         void StartMagSensorLoop();
 
+        void StopDepthSensorLoop();
         void StopAllSensorDevice();
 
         void SetReferenceCoordinateSystem(Windows.Perception.Spatial.SpatialCoordinateSystem refCoord);

@@ -1804,7 +1804,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: fa057c5b267aac542bd34a1c0d8e2a50, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  depthSensorMode: 1
+  depthSensorMode: 0
   enablePointCloud: 1
   depthPreviewPlane: {fileID: 456786859}
   shortAbImagePreviewPlane: {fileID: 349520856}
