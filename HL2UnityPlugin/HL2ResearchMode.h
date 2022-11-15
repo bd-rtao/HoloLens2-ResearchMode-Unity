@@ -74,7 +74,7 @@ namespace winrt::HL2UnityPlugin::implementation
         com_array<uint8_t> GetLongAbImageTextureBuffer();
         com_array<uint16_t> GetLongDepthMapBuffer();
         com_array<uint8_t> GetLongDepthMapTextureBuffer();
-        com_array<uint8_t> GetLFCameraBuffer(int64_t& ts);
+        com_array<uint8_t> GetLFCameraBuffer(com_array<float>& cameraToWorldPose, int64_t& ts);
         com_array<uint8_t> GetRFCameraBuffer(int64_t& ts);
         com_array<uint8_t> GetLRFCameraBuffer(int64_t& ts_left, int64_t& ts_right);
         com_array<uint8_t> GetLFDepthCameraBuffer();
@@ -88,9 +88,8 @@ namespace winrt::HL2UnityPlugin::implementation
         com_array<float> DeprojectLFCamera(float u, float v);
         com_array<float> DeprojectRFCamera(float u, float v);
 
-        // Recalculate the world point's depth relative to the LF Camera using the depth image reprojected onto the LF camera.
-        com_array<float> RefinePointUsingLFDepth(float xWorld, float yWorld, float zWorld);
-        com_array<float> RefinePointUsingLFDepthOld(float xWorld, float yWorld, float zWorld);
+        // Recalculate the cameras point's depth relative to the LF Camera using the depth image reprojected onto the LF camera.
+        com_array<float> RefinePointUsingLFDepth(float xCamera, float yCamera, float zCamera);
 
         // Returns a {u, v} coordinate on the LF depth image, given a point in the world frame
         com_array<float> ProjectLFDepthCamera(float xWorld, float yWorld, float zWorld);

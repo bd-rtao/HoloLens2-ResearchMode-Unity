@@ -17,7 +17,7 @@ namespace HL2UnityPlugin
         UInt8[] GetLongDepthMapTextureBuffer();
         Single[] GetLongThrowPointCloudBuffer();
 
-        UInt8[] GetLFCameraBuffer(out Int64 ts);
+        UInt8[] GetLFCameraBuffer(out Single[] cameraToWorldPose, out Int64 ts);
         UInt8[] GetRFCameraBuffer(out Int64 ts);
         UInt8[] GetLRFCameraBuffer(out Int64 ts_left, out Int64 ts_right);
         UInt8[] GetLFDepthCameraBuffer();
@@ -25,7 +25,7 @@ namespace HL2UnityPlugin
         Single[] GetRFCameraToWorldPose();
         Single[] DeprojectLFCamera(Single u, Single v);
         Single[] DeprojectRFCamera(Single u, Single v);
-        Single[] RefinePointUsingLFDepth(Single xWorld, Single yWorld, Single zWorld);
+        Single[] RefinePointUsingLFDepth(Single xCamera, Single yCamera, Single zCamera);
         Single[] ProjectLFDepthCamera(Single xWorld, Single yWorld, Single zWorld);
         Single[] ProjectDepthCamera(Single xWorld, Single yWorld, Single zWorld);
         Single[] GetDepthPoint(Single u, Single v);
